@@ -4,9 +4,12 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.IBinder
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -16,6 +19,10 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: View
+    private var initialX: Int = 0
+    private var initialY: Int = 0
+    private var initialTouchX: Float = 0f
+    private var initialTouchY: Float = 0f
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -36,7 +43,7 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutParamsType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -49,15 +56,50 @@ class OverlayService : Service() {
         val txtSuggestion = overlayView.findViewById<TextView>(R.id.txtSuggestion)
         val btnAnalyze = overlayView.findViewById<Button>(R.id.btnAnalyze)
 
+        // Torna a janela arrastável pelo ecrã
+        overlayView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = initialX + (event.rawX - initialTouchX).toInt()
+                    params.y = initialY + (event.rawY - initialTouchY).toInt()
+                    windowManager.updateViewLayout(overlayView, params)
+                    true
+                }
+                else -> false
+            }
+        }
+
         btnAnalyze.setOnClickListener {
             txtSuggestion.text = "A analisar..."
+            
+            // Simula o fim da análise ao fim de 2 segundos (atualiza o texto)
+            Handler(Looper.getMainLooper()).postDelayed({
+                txtSuggestion.text = "Melhor jogada: e4"
+            }, 2000)
         }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // Para o serviço e remove a janela flutuante quando a app é fechada nas apps recentes
+        stopSelf()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         if (::overlayView.isInitialized) {
-            windowManager.removeView(overlayView)
+            try {
+                windowManager.removeView(overlayView)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 }
