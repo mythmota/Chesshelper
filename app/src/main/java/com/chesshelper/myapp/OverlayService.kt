@@ -27,7 +27,6 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.github.bhlangonijr.chesslib.Board
-import com.github.bhlangonijr.chesslib.move.MoveList
 
 class OverlayService : Service() {
 
@@ -46,8 +45,8 @@ class OverlayService : Service() {
     private var initialTouchX = 0f
     private var initialTouchY = 0f
 
-    // Instância do motor de regras e estado do xadrez
     private val chessBoard = Board()
+    private val boardRecognizer = ChessBoardRecognizer()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -108,21 +107,30 @@ class OverlayService : Service() {
         }
 
         btnAnalyze.setOnClickListener {
-            txtSuggestion.text = "A ler ecrã e a calcular..."
+            txtSuggestion.text = "IA a analisar ecrã..."
             btnAnalyze.isEnabled = false
 
             Handler(Looper.getMainLooper()).postDelayed({
                 val screenshot = captureScreen()
-                
-                // Calcula as jogadas VÁLIDAS reais para a posição atual
-                val legalMoves = chessBoard.legalMoves()
-                
-                if (legalMoves.isNotEmpty()) {
-                    val bestMove = legalMoves[0] // Obtém a melhor jogada legal calculada
-                    txtSuggestion.text = parseChessMove(bestMove.toString())
+
+                if (screenshot != null) {
+                    // 1. A IA lê a captura de ecrã e extrai a posição FEN
+                    val fenPosition = boardRecognizer.recognizeBoardAndGetFen(screenshot)
+                    chessBoard.loadFromFen(fenPosition)
+
+                    // 2. O motor calcula as jogadas válidas reais
+                    val legalMoves = chessBoard.legalMoves()
+
+                    if (legalMoves.isNotEmpty()) {
+                        val bestMove = legalMoves[0]
+                        txtSuggestion.text = parseChessMove(bestMove.toString())
+                    } else {
+                        txtSuggestion.text = "Sem jogadas válidas detetadas"
+                    }
                 } else {
-                    txtSuggestion.text = "Sem jogadas válidas no ecrã"
+                    txtSuggestion.text = "Erro ao capturar ecrã"
                 }
+
                 btnAnalyze.isEnabled = true
             }, 1000)
         }
@@ -194,7 +202,7 @@ class OverlayService : Service() {
 
             val notification: Notification = NotificationCompat.Builder(this, channelId)
                 .setContentTitle("ChessHelper Ativo")
-                .setContentText("A analisar ecrã em tempo real...")
+                .setContentText("IA a analisar ecrã em tempo real...")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .build()
 
