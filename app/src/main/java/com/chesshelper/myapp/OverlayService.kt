@@ -10,6 +10,7 @@ import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -56,7 +57,7 @@ class OverlayService : Service() {
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
-        windowManager.defaultDisplay.getMetrics(metrics)
+        windowManager.defaultDisplay.getRealMetrics(metrics)
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
         screenDensity = metrics.densityDpi
@@ -111,14 +112,12 @@ class OverlayService : Service() {
             btnAnalyze.isEnabled = false
 
             Handler(Looper.getMainLooper()).postDelayed({
-                val screenshot = captureScreen()
+                val screenshot = captureScreenWithRetry()
 
                 if (screenshot != null) {
-                    // 1. A IA lê a captura de ecrã e extrai a posição FEN
                     val fenPosition = boardRecognizer.recognizeBoardAndGetFen(screenshot)
                     chessBoard.loadFromFen(fenPosition)
 
-                    // 2. O motor calcula as jogadas válidas reais
                     val legalMoves = chessBoard.legalMoves()
 
                     if (legalMoves.isNotEmpty()) {
@@ -132,7 +131,7 @@ class OverlayService : Service() {
                 }
 
                 btnAnalyze.isEnabled = true
-            }, 1000)
+            }, 500)
         }
     }
 
@@ -168,8 +167,17 @@ class OverlayService : Service() {
         )
     }
 
-    private fun captureScreen(): Bitmap? {
-        val image = imageReader?.acquireLatestImage() ?: return null
+    private fun captureScreenWithRetry(): Bitmap? {
+        var image: Image? = null
+        // Tenta obter o frame mais recente; se der null, aguarda uns milissegundos e tenta novamente
+        for (i in 0..5) {
+            image = imageReader?.acquireLatestImage()
+            if (image != null) break
+            try { Thread.sleep(100) } catch (e: InterruptedException) { }
+        }
+
+        if (image == null) return null
+
         val planes = image.planes
         val buffer = planes[0].buffer
         val pixelStride = planes[0].pixelStride
@@ -183,7 +191,9 @@ class OverlayService : Service() {
         )
         bitmap.copyPixelsFromBuffer(buffer)
         image.close()
-        return bitmap
+
+        // Recorta para as dimensões exatas do ecrã
+        return Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
     }
 
     private fun parseChessMove(moveStr: String): String {
