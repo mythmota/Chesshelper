@@ -24,6 +24,10 @@ class OverlayService : Service() {
     private var initialTouchX: Float = 0f
     private var initialTouchY: Float = 0f
 
+    // Lista de jogadas de teste para simular análises reais
+    private val movesDemo = listOf("e4", "Nf3", "Bc4", "Qh5", "O-O", "Bxf7+")
+    private var currentMoveIndex = 0
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -77,18 +81,46 @@ class OverlayService : Service() {
         }
 
         btnAnalyze.setOnClickListener {
-            txtSuggestion.text = "A analisar..."
+            txtSuggestion.text = "A analisar tabuleiro..."
+            btnAnalyze.isEnabled = false
             
-            // Simula o fim da análise ao fim de 2 segundos (atualiza o texto)
+            // Simula o cálculo da análise
             Handler(Looper.getMainLooper()).postDelayed({
-                txtSuggestion.text = "Melhor jogada: e4"
-            }, 2000)
+                val moveNotation = movesDemo[currentMoveIndex]
+                currentMoveIndex = (currentMoveIndex + 1) % movesDemo.size
+                
+                // Converte a notação para texto em português
+                txtSuggestion.text = parseChessMove(moveNotation)
+                btnAnalyze.isEnabled = true
+            }, 1500)
         }
+    }
+
+    // Função que traduz a jogada de xadrez em instruções claras
+    private fun parseChessMove(move: String): String {
+        if (move == "O-O") return "Jogada: Roque Curto"
+        if (move == "O-O-O") return "Jogada: Roque Longo"
+
+        val isCapture = move.contains("x")
+        val cleanMove = move.replace("x", "").replace("+", "").replace("#", "")
+
+        val pieceName = when {
+            cleanMove.startsWith("N") -> "Cavalo"
+            cleanMove.startsWith("B") -> "Bispo"
+            cleanMove.startsWith("R") -> "Torre"
+            cleanMove.startsWith("Q") -> "Dama"
+            cleanMove.startsWith("K") -> "Rei"
+            else -> "Peão"
+        }
+
+        val targetSquare = if (pieceName == "Peão") cleanMove else cleanMove.drop(1)
+        val actionText = if (isCapture) "captura em" else "para"
+
+        return "Mover $pieceName $actionText $targetSquare"
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        // Para o serviço e remove a janela flutuante quando a app é fechada nas apps recentes
         stopSelf()
     }
 
