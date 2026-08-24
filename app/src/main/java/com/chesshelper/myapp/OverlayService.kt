@@ -11,12 +11,12 @@ import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.IBinder
 import android.util.DisplayMetrics
@@ -37,6 +37,12 @@ class OverlayService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
+
+    @Volatile
+    private var latestBitmap: Bitmap? = null
 
     private var screenWidth = 0
     private var screenHeight = 0
@@ -54,6 +60,10 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        
+        backgroundThread = HandlerThread("ImageReaderCallback").apply { start() }
+        backgroundHandler = Handler(backgroundThread!!.looper)
+
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
@@ -111,7 +121,7 @@ class OverlayService : Service() {
             btnAnalyze.isEnabled = false
 
             Handler(Looper.getMainLooper()).postDelayed({
-                val screenshot = captureScreenWithRetry()
+                val screenshot = latestBitmap
 
                 if (screenshot != null) {
                     val fenPosition = boardRecognizer.recognizeBoardAndGetFen(screenshot)
@@ -130,7 +140,7 @@ class OverlayService : Service() {
                 }
 
                 btnAnalyze.isEnabled = true
-            }, 500)
+            }, 300)
         }
     }
 
@@ -154,7 +164,7 @@ class OverlayService : Service() {
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
-            }, 300)
+            }, 200)
         }
 
         return START_STICKY
@@ -162,6 +172,29 @@ class OverlayService : Service() {
 
     private fun setupVirtualDisplay() {
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+        imageReader?.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * screenWidth
+
+                val bitmap = Bitmap.createBitmap(
+                    screenWidth + rowPadding / pixelStride,
+                    screenHeight,
+                    Bitmap.Config.ARGB_8888
+                )
+                bitmap.copyPixelsFromBuffer(buffer)
+                latestBitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                image.close()
+            }
+        }, backgroundHandler)
+
         mediaProjection?.createVirtualDisplay(
             "ChessScanner",
             screenWidth,
@@ -170,35 +203,8 @@ class OverlayService : Service() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface,
             null,
-            null
+            backgroundHandler
         )
-    }
-
-    private fun captureScreenWithRetry(): Bitmap? {
-        var image: Image? = null
-        for (i in 0..10) {
-            image = imageReader?.acquireLatestImage()
-            if (image != null) break
-            try { Thread.sleep(100) } catch (e: InterruptedException) { }
-        }
-
-        if (image == null) return null
-
-        val planes = image.planes
-        val buffer = planes[0].buffer
-        val pixelStride = planes[0].pixelStride
-        val rowStride = planes[0].rowStride
-        val rowPadding = rowStride - pixelStride * screenWidth
-
-        val bitmap = Bitmap.createBitmap(
-            screenWidth + rowPadding / pixelStride,
-            screenHeight,
-            Bitmap.Config.ARGB_8888
-        )
-        bitmap.copyPixelsFromBuffer(buffer)
-        image.close()
-
-        return Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
     }
 
     private fun parseChessMove(moveStr: String): String {
@@ -233,6 +239,7 @@ class OverlayService : Service() {
         super.onDestroy()
         virtualDisplay?.release()
         mediaProjection?.stop()
+        backgroundThread?.quitSafely()
         if (::overlayView.isInitialized) {
             try { windowManager.removeView(overlayView) } catch (e: Exception) { }
         }
