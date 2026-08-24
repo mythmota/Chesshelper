@@ -55,8 +55,11 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     startService(serviceIntent)
                 }
+                // Minimiza a app para segundo plano sem matar o processo
+                moveTaskToBack(true)
+            } else {
+                finish()
             }
-            finish()
         }
     }
 }
