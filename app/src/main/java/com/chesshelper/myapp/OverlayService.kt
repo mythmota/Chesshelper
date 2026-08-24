@@ -11,12 +11,12 @@ import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.Looper
 import android.os.IBinder
 import android.util.DisplayMetrics
@@ -35,14 +35,6 @@ class OverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: View
     private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
-    
-    private var backgroundThread: HandlerThread? = null
-    private var backgroundHandler: Handler? = null
-
-    @Volatile
-    private var latestBitmap: Bitmap? = null
 
     private var screenWidth = 0
     private var screenHeight = 0
@@ -60,10 +52,6 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        
-        backgroundThread = HandlerThread("ImageReaderCallback").apply { start() }
-        backgroundHandler = Handler(backgroundThread!!.looper)
-
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
@@ -117,30 +105,35 @@ class OverlayService : Service() {
         }
 
         btnAnalyze.setOnClickListener {
-            txtSuggestion.text = "IA a analisar ecrã..."
+            txtSuggestion.text = "IA a analisar..."
             btnAnalyze.isEnabled = false
 
+            // Esconde temporariamente o botão para não sair no printscreen
+            overlayView.visibility = View.INVISIBLE
+
             Handler(Looper.getMainLooper()).postDelayed({
-                val screenshot = latestBitmap
+                takeSingleScreenshot { screenshot ->
+                    overlayView.visibility = View.VISIBLE
 
-                if (screenshot != null) {
-                    val fenPosition = boardRecognizer.recognizeBoardAndGetFen(screenshot)
-                    chessBoard.loadFromFen(fenPosition)
+                    if (screenshot != null) {
+                        val fenPosition = boardRecognizer.recognizeBoardAndGetFen(screenshot)
+                        chessBoard.loadFromFen(fenPosition)
 
-                    val legalMoves = chessBoard.legalMoves()
+                        val legalMoves = chessBoard.legalMoves()
 
-                    if (legalMoves.isNotEmpty()) {
-                        val bestMove = legalMoves[0]
-                        txtSuggestion.text = parseChessMove(bestMove.toString())
+                        if (legalMoves.isNotEmpty()) {
+                            val bestMove = legalMoves[0]
+                            txtSuggestion.text = parseChessMove(bestMove.toString())
+                        } else {
+                            txtSuggestion.text = "Sem jogadas válidas detetadas"
+                        }
                     } else {
-                        txtSuggestion.text = "Sem jogadas válidas detetadas"
+                        txtSuggestion.text = "Erro ao capturar ecrã"
                     }
-                } else {
-                    txtSuggestion.text = "Erro ao capturar ecrã"
-                }
 
-                btnAnalyze.isEnabled = true
-            }, 300)
+                    btnAnalyze.isEnabled = true
+                }
+            }, 150)
         }
     }
 
@@ -156,54 +149,66 @@ class OverlayService : Service() {
         }
 
         if (resultCode != -1 && dataIntent != null) {
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                    mediaProjection = projectionManager.getMediaProjection(resultCode, dataIntent)
-                    setupVirtualDisplay()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }, 200)
+            try {
+                val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = projectionManager.getMediaProjection(resultCode, dataIntent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
 
         return START_STICKY
     }
 
-    private fun setupVirtualDisplay() {
-        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-        imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val rowPadding = rowStride - pixelStride * screenWidth
+    private fun takeSingleScreenshot(callback: (Bitmap?) -> Unit) {
+        val proj = mediaProjection
+        if (proj == null) {
+            callback(null)
+            return
+        }
 
-                val bitmap = Bitmap.createBitmap(
-                    screenWidth + rowPadding / pixelStride,
-                    screenHeight,
-                    Bitmap.Config.ARGB_8888
-                )
-                bitmap.copyPixelsFromBuffer(buffer)
-                latestBitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+        val reader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+        var vDisplay: VirtualDisplay? = null
+
+        reader.setOnImageAvailableListener({ imageReader ->
+            var image: Image? = null
+            var bitmap: Bitmap? = null
+            try {
+                image = imageReader.acquireLatestImage()
+                if (image != null) {
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * screenWidth
+
+                    val bmpTemp = Bitmap.createBitmap(
+                        screenWidth + rowPadding / pixelStride,
+                        screenHeight,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    bmpTemp.copyPixelsFromBuffer(buffer)
+                    bitmap = Bitmap.createBitmap(bmpTemp, 0, 0, screenWidth, screenHeight)
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                image.close()
+                image?.close()
+                reader.close()
+                vDisplay?.release()
+                callback(bitmap)
             }
-        }, backgroundHandler)
+        }, Handler(Looper.getMainLooper()))
 
-        mediaProjection?.createVirtualDisplay(
-            "ChessScanner",
+        vDisplay = proj.createVirtualDisplay(
+            "ChessCapture",
             screenWidth,
             screenHeight,
             screenDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
+            reader.surface,
             null,
-            backgroundHandler
+            null
         )
     }
 
@@ -211,7 +216,7 @@ class OverlayService : Service() {
         if (moveStr.length < 4) return "Jogada: $moveStr"
         val from = moveStr.substring(0, 2)
         val to = moveStr.substring(2, 4)
-        return "Mover peça de $from para $to"
+        return "Mover de $from para $to"
     }
 
     private fun startForegroundServiceNotification() {
@@ -223,7 +228,7 @@ class OverlayService : Service() {
 
             val notification: Notification = NotificationCompat.Builder(this, channelId)
                 .setContentTitle("ChessHelper Ativo")
-                .setContentText("IA a analisar ecrã em tempo real...")
+                .setContentText("Pronto para analisar ecrã...")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .build()
 
@@ -237,9 +242,7 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        virtualDisplay?.release()
         mediaProjection?.stop()
-        backgroundThread?.quitSafely()
         if (::overlayView.isInitialized) {
             try { windowManager.removeView(overlayView) } catch (e: Exception) { }
         }
