@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -53,8 +54,6 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForegroundServiceNotification()
-
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
@@ -136,6 +135,8 @@ class OverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundServiceNotification()
+
         val resultCode = intent?.getIntExtra("RESULT_CODE", -1) ?: -1
         val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent?.getParcelableExtra("DATA_INTENT", Intent::class.java)
@@ -145,9 +146,15 @@ class OverlayService : Service() {
         }
 
         if (resultCode != -1 && dataIntent != null) {
-            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, dataIntent)
-            setupVirtualDisplay()
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                    mediaProjection = projectionManager.getMediaProjection(resultCode, dataIntent)
+                    setupVirtualDisplay()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }, 300)
         }
 
         return START_STICKY
@@ -169,8 +176,7 @@ class OverlayService : Service() {
 
     private fun captureScreenWithRetry(): Bitmap? {
         var image: Image? = null
-        // Tenta obter o frame mais recente; se der null, aguarda uns milissegundos e tenta novamente
-        for (i in 0..5) {
+        for (i in 0..10) {
             image = imageReader?.acquireLatestImage()
             if (image != null) break
             try { Thread.sleep(100) } catch (e: InterruptedException) { }
@@ -192,7 +198,6 @@ class OverlayService : Service() {
         bitmap.copyPixelsFromBuffer(buffer)
         image.close()
 
-        // Recorta para as dimensões exatas do ecrã
         return Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
     }
 
@@ -216,7 +221,11 @@ class OverlayService : Service() {
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .build()
 
-            startForeground(1, notification)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            } else {
+                startForeground(1, notification)
+            }
         }
     }
 
